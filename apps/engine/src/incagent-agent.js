@@ -1,8 +1,8 @@
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 import * as db from "./db.js";
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
 const BUSINESS_CONFIGS = {
@@ -41,16 +41,16 @@ Generate a concise business proposal with:
 2. Expected outcome
 3. Success metrics
 
-Format: JSON with keys: summary, goal, budget, expectedContracts
+Respond with JSON only: {"summary": "...", "goal": "...", "budget": 50000, "expectedContracts": 3}
 `;
 
-  const message = await anthropic.messages.create({
-    model: "claude-opus-4-1-20250805",
+  const message = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
     max_tokens: 500,
     messages: [{ role: "user", content: prompt }]
   });
 
-  const responseText = message.content[0].type === "text" ? message.content[0].text : "{}";
+  const responseText = message.choices[0].message.content;
   const proposal = JSON.parse(responseText);
 
   return {
