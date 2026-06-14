@@ -1,0 +1,21 @@
+{
+  "name": "incagent-engine",
+  "version": "0.1.0",
+  "description": "INCAGENT Business Operating System - Slack-first automated sales loop",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "@slack/bolt": "^3.14.0",
+    "@supabase/supabase-js": "^2.38.0",
+    "anthropic": "^0.24.0",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
