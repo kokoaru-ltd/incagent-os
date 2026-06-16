@@ -30,6 +30,34 @@ async function getBusinesses() {
   return await res.json();
 }
 
+async function getReceptionLeads(limit = 5) {
+  const params = new URLSearchParams({
+    select: "id,company,job_title,job_url,source,source_url,phone,location,score,status,reason,created_at",
+    status: "eq.pending",
+    order: "score.desc,created_at.desc",
+    limit: String(limit),
+  });
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/reception_leads?${params.toString()}`, {
+    headers: { apikey: SERVICE_ROLE, Authorization: `Bearer ${SERVICE_ROLE}` },
+  });
+  if (!res.ok) return [];
+  return await res.json();
+}
+
+async function getReceptionLead(id: string) {
+  const params = new URLSearchParams({
+    select: "id,company,job_title,job_url,source,source_url,phone,location,score,status,reason,created_at",
+    id: `eq.${id}`,
+    limit: "1",
+  });
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/reception_leads?${params.toString()}`, {
+    headers: { apikey: SERVICE_ROLE, Authorization: `Bearer ${SERVICE_ROLE}` },
+  });
+  if (!res.ok) return null;
+  const rows = await res.json();
+  return rows?.[0] || null;
+}
+
 async function verifySlack(signingSecret: string, sig: string, ts: string, body: string) {
   if (!sig || !ts) return false;
   if (Math.abs(Date.now() / 1000 - Number(ts)) > 60 * 5) return false;
@@ -284,6 +312,103 @@ function formatOutbound(campaigns: any[], logs: any[]): string {
     t += `　• ${w} → ${l.gate_result || l.result || "記録"}\n`;
   }
   return t.slice(0, 2900);
+}
+
+function isReceptionBusiness(id: string, biz?: any): boolean {
+  const haystack = `${id} ${biz?.name || ""} ${biz?.description || ""}`.toLowerCase();
+  return haystack.includes("inbound") || haystack.includes("受電") || haystack.includes("受付");
+}
+
+function receptionSearchLinks(): string {
+  const q = encodeURIComponent("電話受付 受電 オペレーター 受付スタッフ");
+  const qBiz = encodeURIComponent("電話受付 受電 オペレーター 自社 クリニック 不動産 士業");
+  return [
+    "*🔎 受電代行の案件/営業先を探す入口*",
+    "",
+    "*最優先: 求人=ニーズ顕在*",
+    `• <https://jp.indeed.com/jobs?q=${q}|Indeed: 電話受付/受電オペレーター>`,
+    `• <https://www.google.com/search?q=${qBiz}|Google: 自社受電募集の事業会社>`,
+    "",
+    "*受託案件サイト*",
+    `• <https://crowdworks.jp/public/jobs/search?search%5Bkeywords%5D=${encodeURIComponent("電話受付 受電 受付代行")}|クラウドワークス: 電話受付/受電>`,
+    `• <https://www.lancers.jp/work/search?keyword=${encodeURIComponent("電話受付 受電 受付代行")}|ランサーズ: 電話受付/受電>`,
+    `• <https://coconala.com/search?keyword=${encodeURIComponent("電話受付 受電 受付代行")}|ココナラ: 受付代行>`,
+    "",
+    "当面はIndeed/求人から直接営業が一番筋がいいです。求人を出している時点で、人件費を払う意思と受電課題が見えています。",
+  ].join("\n");
+}
+
+function receptionOutreachDraft(lead?: any): string {
+  const company = lead?.company || "御社";
+  const jobTitle = lead?.job_title ? `「${lead.job_title}」` : "電話受付/受電対応";
+  return [
+    "*✉️ 受電代行 営業文面下書き*",
+    "",
+    `件名: ${company}の${jobTitle}をAI受電で一部代替できるか、デモを作らせてください`,
+    "",
+    `${company} ご担当者様`,
+    "",
+    "求人を拝見しました。電話受付/問い合わせ一次対応の採用を進められているようでしたのでご連絡しました。",
+    "",
+    "弊社では、050番号を置くだけでAIが一次受電し、要件整理・折り返し受付・必要時の担当者転送まで行う仕組みを提供しています。",
+    "人を1名採用する前に、御社の実際の受付内容でAI受電デモを作り、録音で確認いただけます。",
+    "",
+    "もし合わなければそこで終了で構いません。採用コストや受付人件費の一部を置き換えられるかだけ、5分で確認いただけます。",
+    "",
+    "デモ作成に必要なのは、受付でよく聞かれる内容と、折り返し先の条件だけです。",
+    "",
+    "ご興味あれば、御社向けの受電デモを1本作ってお送りします。",
+    "",
+    "合同会社ココアル 近藤",
+  ].join("\n");
+}
+
+function receptionLeadBlocks(leads: any[]): any[] {
+  const blocks: any[] = [
+    { type: "header", text: { type: "plain_text", text: "📥 受電代行: 求人リード" } },
+    { type: "section", text: { type: "mrkdwn", text: leads.length ? `DB内の候補 ${leads.length}件を表示します。` : "DB内に求人リードがまだありません。まず検索入口から拾ってDB投入します。" } },
+    { type: "divider" },
+  ];
+
+  if (!leads.length) {
+    blocks.push({ type: "section", text: { type: "mrkdwn", text: receptionSearchLinks() } });
+    blocks.push({ type: "section", text: { type: "mrkdwn", text: receptionOutreachDraft() } });
+    blocks.push(backActions());
+    return blocks;
+  }
+
+  for (const lead of leads) {
+    const title = [lead.company, lead.job_title].filter(Boolean).join(" / ");
+    const url = lead.job_url || lead.source_url || "";
+    const line = [
+      `*${title || "名称未設定"}*`,
+      `score: ${lead.score ?? 0} / source: ${lead.source || "-"}`,
+      lead.location ? `地域: ${lead.location}` : "",
+      lead.phone ? `電話: ${lead.phone}` : "",
+      lead.reason ? `理由: ${String(lead.reason).slice(0, 180)}` : "",
+      url ? `<${url}|求人を見る>` : "",
+    ].filter(Boolean).join("\n");
+    blocks.push({ type: "section", text: { type: "mrkdwn", text: line } });
+    blocks.push({ type: "actions", elements: [
+      btn("✉️ 文面", `reception_outreach_${lead.id}`, "primary"),
+      btn("🔎 探す入口", "reception_sources"),
+    ] });
+    blocks.push({ type: "divider" });
+  }
+
+  blocks.push(backActions());
+  return blocks.slice(0, 48);
+}
+
+async function receptionBusinessBlocks(): Promise<any[]> {
+  const leads = await getReceptionLeads(5);
+  const blocks = receptionLeadBlocks(leads);
+  blocks.splice(1, 0, { type: "section", text: { type: "mrkdwn", text: [
+      "*選択された事業: 受電代行*",
+      "次にやることは、受電要員を募集している企業を見つけて、AI受電デモを提案することです。",
+      "求人がある=人件費を払う意思がある=営業先です。",
+    ].join("\n") } });
+  return blocks;
 }
 
 function inboundHistoryBlocks(logs: any[]): any[] {
@@ -559,6 +684,21 @@ async function handleMessageEvent(event: any, cfg: Record<string, string>) {
     return;
   }
 
+  if (
+    text.includes("案件探") ||
+    text.includes("求人リード") ||
+    text.includes("営業先") ||
+    (text.includes("受電") && (text.includes("案件") || text.includes("求人") || text.includes("営業")))
+  ) {
+    await postChannel(cfg, channel, "受電代行の求人リード", await receptionBusinessBlocks(), threadTs);
+    return;
+  }
+
+  if (text.includes("営業文") || text.includes("メール文") || text.includes("送信文")) {
+    await postChannel(cfg, channel, "受電代行 営業文面", resultBlocks(receptionOutreachDraft()), threadTs);
+    return;
+  }
+
   if (text.includes("テンプレ") && (text.includes("作って") || text.includes("書いて") || text.includes("生成") || text.includes("作成"))) {
     await postChannel(cfg, channel, "受電テンプレ下書き", resultBlocks(await draftReceptionTemplate(event.text || "")), threadTs);
     return;
@@ -673,6 +813,12 @@ async function handleAction(actionId: string, cfg: Record<string, string>, sende
       await sender("", resultBlocks(templateInventoryText(s)));
     } else if (actionId === "apo_template_howto") {
       await sender("", resultBlocks(templateHowToText()));
+    } else if (actionId === "reception_sources") {
+      await sender("", resultBlocks(receptionSearchLinks()));
+    } else if (actionId.startsWith("reception_outreach_")) {
+      const id = actionId.replace("reception_outreach_", "");
+      const lead = await getReceptionLead(id);
+      await sender("", resultBlocks(receptionOutreachDraft(lead)));
     } else if (actionId === "apo_outbound") {
       const campaigns = await apotrailGet(cfg, "/api/campaigns");
       const camps = Array.isArray(campaigns) ? campaigns : (campaigns.campaigns || []);
@@ -684,6 +830,8 @@ async function handleAction(actionId: string, cfg: Record<string, string>, sende
       const biz = businesses.find((b: any) => b.id === id);
       if (biz?.status === "preparing") {
         await sender("", resultBlocks(`🚧 *${biz.name} は準備中です*\n対個人勧誘の法務確認後に開放します。今は *受電代行* で縦1本を回してください。`));
+      } else if (isReceptionBusiness(id, biz)) {
+        await sender("", await receptionBusinessBlocks());
       } else {
         await sender("", resultBlocks(`✅ *${biz?.name || id}* を選択。受電状況は「📥 受電履歴 / 📊 受電分析」で確認できます。`));
       }
