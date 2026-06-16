@@ -136,7 +136,10 @@ function inferTemplateName(prompt?: string): string {
 
 function templateDefaults(): string {
   return [
-    "*🧩 受電テンプレ 初期設定*",
+    "*🧩 利用できる受電テンプレ*",
+    "",
+    "*登録済みテンプレ: 3個*",
+    "*本番使用中テンプレ: 1個*（`incoming_settings.prompt`）",
     "",
     "*1. 標準受付テンプレ（初期値）*",
     "会社名、名前、電話番号、用件、折り返し希望を聞き取り、答えられない内容は転送または折り返しに回す。",
@@ -147,22 +150,127 @@ function templateDefaults(): string {
     "*3. 高単価相談テンプレ（不動産・士業・医療など）*",
     "相談内容、緊急度、希望日時、連絡先を丁寧に聞き取り、専門判断や金額回答は人間へ渡す。",
     "",
-    "本番でどのテンプレを使うかは `incoming_settings.prompt` に保存された内容で決まります。",
+    "この3つは型です。本番で実際に使うテンプレは `incoming_settings.prompt` に保存されている1つです。",
   ].join("\n");
 }
 
 function currentTemplateText(s: any): string {
   return [
-    "*🧩 現在の受電テンプレ*",
+    "*🧩 本番で使っている受電テンプレ*",
     "",
-    `*選択状態:* ${inferTemplateName(s.prompt)}`,
+    `*本番テンプレ:* ${inferTemplateName(s.prompt)}`,
+    "*保存場所:* `incoming_settings.prompt`",
+    "*本番テンプレ数:* 1個",
+    "*利用できる型:* 3個（標準受付 / 予約受付 / 高単価相談）",
+    "",
     `*受電番号:* ${s.twilioNumber || "(未割当)"}`,
     `*会社名:* ${s.store_name || "(未設定)"}`,
     "",
-    "受電はこの設定の `prompt` で応答します。テンプレ名だけではなく、保存済みプロンプト本文が本番の挙動です。",
+    "AI受電はテンプレ名ではなく、下のprompt本文で動きます。",
     "",
     s.prompt ? `*prompt:*\n${String(s.prompt).slice(0, 1200)}` : "*prompt:* 未設定",
   ].join("\n").slice(0, 2900);
+}
+
+function templateHowToText(): string {
+  return [
+    "*🧩 テンプレを書かせる方法*",
+    "",
+    "Slackでこう投げてください。",
+    "",
+    "`テンプレ作って 業種=歯科 目的=予約受付 必ず聞く=名前,電話番号,希望日時,症状 転送条件=痛みが強い,クレーム,料金相談 禁止=診断,料金確約`",
+    "",
+    "*指定すると精度が上がる項目*",
+    "• 業種",
+    "• 目的（予約受付 / 問い合わせ一次対応 / 折り返し受付）",
+    "• 最初の名乗り",
+    "• 必ず聞く項目",
+    "• AIが答えてよい範囲",
+    "• 禁止する回答",
+    "• 人間へ転送/折り返しする条件",
+    "",
+    "返すのは下書きです。本番反映は誤爆防止のため自動ではしません。",
+  ].join("\n");
+}
+
+function templateInventoryText(s: any): string {
+  return [
+    "*🧩 受電テンプレ一覧*",
+    "",
+    "*本番使用中: 1個*",
+    `• ${inferTemplateName(s.prompt)} → \`incoming_settings.prompt\``,
+    "",
+    "*利用できる型: 3個*",
+    "1. 標準受付テンプレ",
+    "2. 予約受付テンプレ",
+    "3. 高単価相談テンプレ",
+    "",
+    "*次にできること*",
+    "`受電テンプレ` → 本番promptを見る",
+    "`テンプレ一覧` → この一覧を見る",
+    "`テンプレ作って ...` → 指定内容で下書きを作る",
+    "`テンプレ書き方` → 指定方法を見る",
+  ].join("\n");
+}
+
+async function draftReceptionTemplate(spec: string): Promise<string> {
+  const cleanSpec = spec.replace(/<@[A-Z0-9]+>/g, "").replace(/テンプレ(を)?(作って|書いて|生成して|作成して)/g, "").trim();
+  const fallback = [
+    "*🧩 受電テンプレ下書き*",
+    "",
+    "あなたは受付担当です。落ち着いた丁寧な口調で対応してください。",
+    "",
+    "*最初の名乗り*",
+    "お電話ありがとうございます。AI受付です。ご用件をお伺いします。",
+    "",
+    "*必ず聞く項目*",
+    "1. お名前",
+    "2. 会社名または団体名",
+    "3. 折り返し可能な電話番号",
+    "4. ご用件",
+    "5. 希望日時や緊急度",
+    "",
+    "*答えてよい範囲*",
+    "営業時間、受付可能な内容、折り返し予定、一般的な案内。",
+    "",
+    "*答えてはいけない範囲*",
+    "料金の確約、専門判断、法務・医療判断、契約条件の確定、クレームへの断定回答。",
+    "",
+    "*人間へ回す条件*",
+    "緊急、クレーム、料金相談、専門判断が必要、予約確定が必要、相手が人間対応を希望。",
+    "",
+    `*指定内容メモ*\n${cleanSpec || "(指定なし)"}`,
+  ].join("\n");
+
+  const key = Deno.env.get("OPENAI_API_KEY");
+  if (!key) return fallback.slice(0, 2900);
+
+  try {
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        temperature: 0.2,
+        messages: [
+          {
+            role: "system",
+            content:
+              "あなたは日本の小規模事業者向けAI受電テンプレを書く実務担当。誇大表現を避け、AIが答えてよい範囲/禁止範囲/人間へ回す条件を明確にしたSlack向けMarkdownだけを返す。",
+          },
+          {
+            role: "user",
+            content: `次の指定でAI受電テンプレを作成。必ず「最初の名乗り」「必ず聞く項目」「答えてよい範囲」「答えてはいけない範囲」「人間へ回す条件」「本番prompt」を含める。\n\n${cleanSpec || "標準受付テンプレ"}`,
+          },
+        ],
+      }),
+    });
+    const data = await res.json();
+    const text = data.choices?.[0]?.message?.content;
+    return String(text || fallback).slice(0, 2900);
+  } catch {
+    return fallback.slice(0, 2900);
+  }
 }
 
 function formatOutbound(campaigns: any[], logs: any[]): string {
@@ -280,7 +388,9 @@ function homeHelpBlocks(): any[] {
       "`今月のサマリ`",
       "`受電設定`",
       "`受電テンプレ`",
-      "`初期テンプレ`",
+      "`テンプレ一覧`",
+      "`テンプレ書き方`",
+      "`テンプレ作って 業種=歯科 目的=予約受付 ...`",
       "`架電状況`",
       "`CSV出力`",
     ].join("\n") } },
@@ -304,12 +414,10 @@ function homeHelpBlocks(): any[] {
     ].join("\n") } },
     { type: "section", text: { type: "mrkdwn", text: [
       "*受電テンプレの書き方*",
-      "テンプレには次の5点を必ず入れます。",
-      "1. 最初の名乗り",
-      "2. 必ず聞く項目（名前、会社名、電話番号、用件）",
-      "3. AIが答えてよい範囲",
-      "4. 答えてはいけない範囲（料金確約、専門判断、法務/医療判断など）",
-      "5. 人間へ回す条件（緊急、クレーム、高単価相談、予約確定など）",
+      "`テンプレ作って 業種=... 目的=... 必ず聞く=... 禁止=... 転送条件=...` と投げると下書きを作ります。",
+      "",
+      "*テンプレの見方*",
+      "`テンプレ一覧` で本番使用中1個と利用できる型3個を確認できます。",
     ].join("\n") } },
   ];
 }
@@ -372,8 +480,9 @@ async function subMenuBlocks(cat: string) {
       { type: "section", text: { type: "mrkdwn", text: "受電番号、転送先、営業時間、受電テンプレを確認します。受電の応答内容は `incoming_settings.prompt` が本番ソースです。" } },
       { type: "actions", elements: [
         btn("⚙️ 受電設定を確認", "apo_settings", "primary"),
-        btn("🧩 初期テンプレ", "apo_template_defaults"),
         btn("✅ 使用中テンプレ", "apo_template_current"),
+        btn("📚 テンプレ一覧", "apo_template_list"),
+        btn("✍️ 書き方", "apo_template_howto"),
       ] },
       back,
     ];
@@ -392,7 +501,7 @@ async function subMenuBlocks(cat: string) {
       "*INCAGENT 事業OS の使い方*",
       "",
       "*よく使う会話コマンド*",
-      "`受電履歴見せて` / `受電分析` / `今月のサマリ` / `受電設定` / `受電テンプレ` / `初期テンプレ` / `架電状況` / `CSV出力`",
+      "`受電履歴見せて` / `受電分析` / `今月のサマリ` / `受電設定` / `受電テンプレ` / `テンプレ一覧` / `テンプレ書き方` / `テンプレ作って ...` / `架電状況` / `CSV出力`",
       "",
       "*📥 受電状況*",
       "受電履歴、受電分析、今月サマリを見ます。完結率と人件費削減額を見る場所です。",
@@ -404,7 +513,7 @@ async function subMenuBlocks(cat: string) {
       "会社名、050受電番号、転送先、営業時間、音声、使用中テンプレを確認します。受電テンプレの本体は `incoming_settings.prompt` です。",
       "",
       "*🧩 テンプレ作成ルール*",
-      "名乗り、必須ヒアリング項目、AIが答えてよい範囲、答えてはいけない範囲、人間へ回す条件を書きます。",
+      "`テンプレ作って 業種=... 目的=... 必ず聞く=... 禁止=... 転送条件=...` と指定します。下書きを返します。本番反映は自動ではしません。",
       "",
       "*📞 架電*",
       "準備中事業の参考表示です。表示後も下の「メニューに戻る」で戻れます。",
@@ -450,8 +559,24 @@ async function handleMessageEvent(event: any, cfg: Record<string, string>) {
     return;
   }
 
+  if (text.includes("テンプレ") && (text.includes("作って") || text.includes("書いて") || text.includes("生成") || text.includes("作成"))) {
+    await postChannel(cfg, channel, "受電テンプレ下書き", resultBlocks(await draftReceptionTemplate(event.text || "")), threadTs);
+    return;
+  }
+
+  if (text.includes("テンプレ") && (text.includes("一覧") || text.includes("何個") || text.includes("いくつ") || text.includes("リスト"))) {
+    const s = await apotrailGet(cfg, "/api/admin/incoming-settings");
+    await postChannel(cfg, channel, "受電テンプレ一覧", resultBlocks(templateInventoryText(s)), threadTs);
+    return;
+  }
+
+  if (text.includes("テンプレ") && (text.includes("書き方") || text.includes("方法") || text.includes("指定"))) {
+    await postChannel(cfg, channel, "受電テンプレの書き方", resultBlocks(templateHowToText()), threadTs);
+    return;
+  }
+
   if (text.includes("初期設定") || text.includes("初期テンプレ")) {
-    await postChannel(cfg, channel, "受電テンプレ初期設定", resultBlocks(templateDefaults()), threadTs);
+    await postChannel(cfg, channel, "受電テンプレ一覧", resultBlocks(templateDefaults()), threadTs);
     return;
   }
 
@@ -543,6 +668,11 @@ async function handleAction(actionId: string, cfg: Record<string, string>, sende
     } else if (actionId === "apo_template_current") {
       const s = await apotrailGet(cfg, "/api/admin/incoming-settings");
       await sender("", resultBlocks(currentTemplateText(s)));
+    } else if (actionId === "apo_template_list") {
+      const s = await apotrailGet(cfg, "/api/admin/incoming-settings");
+      await sender("", resultBlocks(templateInventoryText(s)));
+    } else if (actionId === "apo_template_howto") {
+      await sender("", resultBlocks(templateHowToText()));
     } else if (actionId === "apo_outbound") {
       const campaigns = await apotrailGet(cfg, "/api/campaigns");
       const camps = Array.isArray(campaigns) ? campaigns : (campaigns.campaigns || []);
