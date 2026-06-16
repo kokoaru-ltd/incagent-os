@@ -265,11 +265,60 @@ function resultBlocks(text: string): any[] {
   ];
 }
 
+function homeHelpBlocks(): any[] {
+  return [
+    { type: "divider" },
+    { type: "header", text: { type: "plain_text", text: "最初に見るヘルプ" } },
+    { type: "section", text: { type: "mrkdwn", text: [
+      "*使い方は2通り*",
+      "1. 下のボタンを押す",
+      "2. チャンネルかDMで普通に話しかける",
+      "",
+      "*会話例*",
+      "`受電履歴見せて`",
+      "`受電分析`",
+      "`今月のサマリ`",
+      "`受電設定`",
+      "`受電テンプレ`",
+      "`初期テンプレ`",
+      "`架電状況`",
+      "`CSV出力`",
+    ].join("\n") } },
+    { type: "section", text: { type: "mrkdwn", text: [
+      "*チャンネルで使う場合*",
+      "1. チャンネルに `@incagentengine` を招待: `/invite @incagentengine`",
+      "2. `@incagentengine 受電履歴見せて` のように話す",
+      "",
+      "*DMで使う場合*",
+      "`incagentengine` に直接 `受電履歴` と送る",
+    ].join("\n") } },
+    { type: "section", text: { type: "mrkdwn", text: [
+      "*受電設定で見るもの*",
+      "• 050受電番号",
+      "• 転送先",
+      "• 営業時間",
+      "• 音声/モデル",
+      "• 使用中の受電テンプレ",
+      "",
+      "本番で実際に使われる応答内容は `incoming_settings.prompt` です。",
+    ].join("\n") } },
+    { type: "section", text: { type: "mrkdwn", text: [
+      "*受電テンプレの書き方*",
+      "テンプレには次の5点を必ず入れます。",
+      "1. 最初の名乗り",
+      "2. 必ず聞く項目（名前、会社名、電話番号、用件）",
+      "3. AIが答えてよい範囲",
+      "4. 答えてはいけない範囲（料金確約、専門判断、法務/医療判断など）",
+      "5. 人間へ回す条件（緊急、クレーム、高単価相談、予約確定など）",
+    ].join("\n") } },
+  ];
+}
+
 // ---------- トップメニュー（6つの入口・LINEリッチメニュー風グリッド） ----------
 async function menuBlocks() {
   return [
     { type: "header", text: { type: "plain_text", text: "🏢 INCAGENT 事業OS" } },
-    { type: "section", text: { type: "mrkdwn", text: "入口を選んでください（タップで開きます）" } },
+    { type: "section", text: { type: "mrkdwn", text: "ボタンでも会話でも操作できます。まずは `受電履歴見せて` / `受電テンプレ` / `ヘルプ` と話しかけてください。" } },
     { type: "actions", elements: [
       btn("🏢 事業選択", "menu_business", "primary"),
       btn("📥 受電状況", "menu_inbound", "primary"),
@@ -280,6 +329,7 @@ async function menuBlocks() {
       btn("📞 架電", "menu_outbound"),
       btn("❓ ヘルプ", "menu_help"),
     ] },
+    ...homeHelpBlocks(),
   ];
 }
 
@@ -341,8 +391,8 @@ async function subMenuBlocks(cat: string) {
     { type: "section", text: { type: "mrkdwn", text: [
       "*INCAGENT 事業OS の使い方*",
       "",
-      "*🏢 事業選択*",
-      "回す事業を選びます。今の本命は受電代行です。コールドコール系は法務確認まで準備中のままにします。",
+      "*よく使う会話コマンド*",
+      "`受電履歴見せて` / `受電分析` / `今月のサマリ` / `受電設定` / `受電テンプレ` / `初期テンプレ` / `架電状況` / `CSV出力`",
       "",
       "*📥 受電状況*",
       "受電履歴、受電分析、今月サマリを見ます。完結率と人件費削減額を見る場所です。",
@@ -352,6 +402,9 @@ async function subMenuBlocks(cat: string) {
       "",
       "*⚙️ 受電設定*",
       "会社名、050受電番号、転送先、営業時間、音声、使用中テンプレを確認します。受電テンプレの本体は `incoming_settings.prompt` です。",
+      "",
+      "*🧩 テンプレ作成ルール*",
+      "名乗り、必須ヒアリング項目、AIが答えてよい範囲、答えてはいけない範囲、人間へ回す条件を書きます。",
       "",
       "*📞 架電*",
       "準備中事業の参考表示です。表示後も下の「メニューに戻る」で戻れます。",
