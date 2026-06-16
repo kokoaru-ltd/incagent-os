@@ -9,7 +9,7 @@ export async function getBusinesses() {
   const { data, error } = await supabase
     .from("businesses")
     .select("*")
-    .in("id", ["light-fiber", "sales-agent"]);
+    .order("created_at", { ascending: true });
   if (error) throw error;
   return data;
 }
