@@ -30,7 +30,7 @@ async function getBusinesses() {
   return await res.json();
 }
 
-async function getReceptionLeads(limit = 5) {
+async function getReceptionLeads(limit = 15) {
   const params = new URLSearchParams({
     select: "id,company,job_title,job_url,source,source_url,phone,location,score,status,reason,created_at",
     status: "eq.pending",
@@ -42,6 +42,13 @@ async function getReceptionLeads(limit = 5) {
   });
   if (!res.ok) return [];
   return await res.json();
+}
+
+function normalizeCompanyName(name: string): string {
+  return String(name || "")
+    .replace(/株式会社|有限会社|合同会社|Inc\.|Co\.,?\s*Ltd\.|㈱|\s/g, "")
+    .toLowerCase()
+    .trim();
 }
 
 async function getReceptionLead(id: string) {
@@ -95,6 +102,59 @@ async function upsertTenantProfile(teamId: string, userId: string, companyName: 
   if (!res.ok) throw new Error(`tenant upsert ${res.status}: ${await res.text()}`);
   const rows = await res.json();
   return rows?.[0] || null;
+}
+
+async function createOutreachTask(tenant: any, lead: any, channel: "call" | "form" | "platform") {
+  if (!tenant?.id) throw new Error("会社情報が未登録です。App Homeで会社名・担当者名を登録してください。");
+  if (!lead?.company) throw new Error("リード情報がありません。");
+  const message = receptionOutreachDraft(lead, tenant);
+  const destination =
+    channel === "call" ? lead.phone || null :
+    channel === "form" ? lead.source_url || lead.job_url || null :
+    lead.job_url || lead.source_url || null;
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/outreach_tasks?on_conflict=tenant_id,lead_company_norm,channel`, {
+    method: "POST",
+    headers: {
+      apikey: SERVICE_ROLE,
+      Authorization: `Bearer ${SERVICE_ROLE}`,
+      "Content-Type": "application/json",
+      Prefer: "resolution=ignore-duplicates,return=representation",
+    },
+    body: JSON.stringify({
+      tenant_id: tenant.id,
+      lead_id: lead.id,
+      lead_company: lead.company,
+      lead_company_norm: normalizeCompanyName(lead.company),
+      channel,
+      status: "pending_approval",
+      destination,
+      source_url: lead.job_url || lead.source_url || null,
+      message,
+      metadata: {
+        job_title: lead.job_title,
+        source: lead.source,
+        score: lead.score,
+        needs_phone_lookup: channel === "call" && !lead.phone,
+        needs_browser_submit: channel === "form" || channel === "platform",
+      },
+    }),
+  });
+  if (!res.ok) throw new Error(`outreach task ${res.status}: ${await res.text()}`);
+  const rows = await res.json();
+  return rows?.[0] || null;
+}
+
+async function getOutreachTaskSummary(tenantId?: string) {
+  if (!tenantId) return [];
+  const params = new URLSearchParams({
+    select: "channel,status",
+    tenant_id: `eq.${tenantId}`,
+  });
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/outreach_tasks?${params.toString()}`, {
+    headers: { apikey: SERVICE_ROLE, Authorization: `Bearer ${SERVICE_ROLE}` },
+  });
+  if (!res.ok) return [];
+  return await res.json();
 }
 
 async function verifySlack(signingSecret: string, sig: string, ts: string, body: string) {
@@ -403,54 +463,55 @@ function receptionOutreachDraft(lead?: any, tenant?: any): string {
   ].join("\n");
 }
 
-function receptionLeadBlocks(leads: any[]): any[] {
+function receptionLeadBlocks(leads: any[], tenant?: any): any[] {
   const blocks: any[] = [
-    { type: "header", text: { type: "plain_text", text: "📥 受電代行: 求人リード" } },
-    { type: "section", text: { type: "mrkdwn", text: leads.length ? `DB内の候補 ${leads.length}件を表示します。` : "DB内に求人リードがまだありません。まず検索入口から拾ってDB投入します。" } },
+    { type: "header", text: { type: "plain_text", text: "????: ?????" } },
+    { type: "section", text: { type: "mrkdwn", text: leads.length ? `DB???? ${leads.length}???????????????????????????????????????????????` : "DB?????????????????????????DB??????" } },
     { type: "divider" },
   ];
 
   if (!leads.length) {
     blocks.push({ type: "section", text: { type: "mrkdwn", text: receptionSearchLinks() } });
-    blocks.push({ type: "section", text: { type: "mrkdwn", text: receptionOutreachDraft() } });
+    blocks.push({ type: "section", text: { type: "mrkdwn", text: receptionOutreachDraft(undefined, tenant) } });
     blocks.push(backActions());
     return blocks;
   }
 
-  for (const lead of leads) {
+  for (const lead of leads.slice(0, 15)) {
     const title = [lead.company, lead.job_title].filter(Boolean).join(" / ");
     const url = lead.job_url || lead.source_url || "";
     const line = [
-      `*${title || "名称未設定"}*`,
+      `*${title || "?????"}*`,
       `score: ${lead.score ?? 0} / source: ${lead.source || "-"}`,
-      lead.location ? `地域: ${lead.location}` : "",
-      lead.phone ? `電話: ${lead.phone}` : "",
-      lead.reason ? `理由: ${String(lead.reason).slice(0, 180)}` : "",
-      url ? `<${url}|求人を見る>` : "",
+      lead.location ? `??: ${lead.location}` : "",
+      lead.phone ? `??: ${lead.phone}` : "??: ????????????????????",
+      lead.reason ? `??: ${String(lead.reason).slice(0, 140)}` : "",
+      url ? `<${url}|?????>` : "",
     ].filter(Boolean).join("\n");
     blocks.push({ type: "section", text: { type: "mrkdwn", text: line } });
     blocks.push({ type: "actions", elements: [
-      btn("✉️ 文面", `reception_outreach_${lead.id}`, "primary"),
-      btn("🔎 探す入口", "reception_sources"),
+      btn("?????", `outreach_call_${lead.id}`, "primary"),
+      btn("??????", `outreach_form_${lead.id}`),
+      btn("?????", `outreach_platform_${lead.id}`),
     ] });
-    blocks.push({ type: "divider" });
   }
 
+  blocks.push({ type: "actions", elements: [btn("????", "reception_sources"), btn("???????", "outreach_status")] });
   blocks.push(backActions());
   return blocks.slice(0, 48);
 }
 
-async function receptionBusinessBlocks(): Promise<any[]> {
-  const leads = await getReceptionLeads(5);
-  const blocks = receptionLeadBlocks(leads);
+async function receptionBusinessBlocks(tenant?: any): Promise<any[]> {
+  const leads = await getReceptionLeads(15);
+  const tasks = await getOutreachTaskSummary(tenant?.id);
+  const blocks = receptionLeadBlocks(leads, tenant);
   blocks.splice(1, 0, { type: "section", text: { type: "mrkdwn", text: [
-      "*選択された事業: 受電代行*",
-      "次にやることは、受電要員を募集している企業を見つけて、AI受電デモを提案することです。",
-      "求人がある=人件費を払う意思がある=営業先です。",
-    ].join("\n") } });
+    "*???????: ????*",
+    "?????=???????????=??????????????????????????????????",
+    tasks.length ? `?????: ${tasks.length}?` : "?????: ???????",
+  ].join("\n") } });
   return blocks;
 }
-
 function inboundHistoryBlocks(logs: any[]): any[] {
   const labels: Record<string, string> = { inquiry: "問い合わせ対応✅", callback: "折り返し約束", rejected: "断り", voicemail: "留守電", no_answer: "応答なし" };
   const blocks: any[] = [
@@ -793,7 +854,7 @@ async function handleMessageEvent(event: any, cfg: Record<string, string>) {
     text.includes("営業先") ||
     (text.includes("受電") && (text.includes("案件") || text.includes("求人") || text.includes("営業")))
   ) {
-    await postChannel(cfg, channel, "受電代行の求人リード", await receptionBusinessBlocks(), threadTs);
+    await postChannel(cfg, channel, "受電代行の求人リード", await receptionBusinessBlocks(tenant), threadTs);
     return;
   }
 
@@ -920,6 +981,26 @@ async function handleAction(actionId: string, cfg: Record<string, string>, sende
       await sender("", resultBlocks(templateHowToText()));
     } else if (actionId === "reception_sources") {
       await sender("", resultBlocks(receptionSearchLinks()));
+    } else if (actionId === "outreach_status") {
+      const tenant = await getTenantBySlackTeam(teamId);
+      const tasks = await getOutreachTaskSummary(tenant?.id);
+      const counts: Record<string, number> = {};
+      for (const t of tasks) counts[`${t.channel}/${t.status}`] = (counts[`${t.channel}/${t.status}`] || 0) + 1;
+      const body = Object.keys(counts).length
+        ? Object.entries(counts).map(([k, v]) => `・${k}: ${v}`).join("\n")
+        : "営業タスクはまだありません。";
+      await sender("", resultBlocks(`*営業タスク状況*\n${body}`));
+    } else if (actionId.startsWith("outreach_call_") || actionId.startsWith("outreach_form_") || actionId.startsWith("outreach_platform_")) {
+      const channel = actionId.startsWith("outreach_call_") ? "call" : actionId.startsWith("outreach_form_") ? "form" : "platform";
+      const id = actionId.replace(/^outreach_(call|form|platform)_/, "");
+      const tenant = await getTenantBySlackTeam(teamId);
+      const lead = await getReceptionLead(id);
+      const task = await createOutreachTask(tenant, lead, channel as "call" | "form" | "platform");
+      const duplicated = !task;
+      const channelLabel = channel === "call" ? "架電" : channel === "form" ? "フォーム営業" : "プラットフォーム応募";
+      await sender("", resultBlocks(duplicated
+        ? `*重複スキップ*\n${lead?.company || id} は ${channelLabel} キューに既に入っています。同一社名には二重送信しません。`
+        : `*営業キュー投入済み*\n会社: ${lead?.company || "-"}\nチャネル: ${channelLabel}\n状態: pending_approval\n\n次は稟議承認後に自動実行ワーカーが送信/架電します。`));
     } else if (actionId.startsWith("reception_outreach_")) {
       const id = actionId.replace("reception_outreach_", "");
       const lead = await getReceptionLead(id);
@@ -936,7 +1017,7 @@ async function handleAction(actionId: string, cfg: Record<string, string>, sende
       if (biz?.status === "preparing") {
         await sender("", resultBlocks(`🚧 *${biz.name} は準備中です*\n対個人勧誘の法務確認後に開放します。今は *受電代行* で縦1本を回してください。`));
       } else if (isReceptionBusiness(id, biz)) {
-        await sender("", await receptionBusinessBlocks());
+        await sender("", await receptionBusinessBlocks(await getTenantBySlackTeam(teamId)));
       } else {
         await sender("", resultBlocks(`✅ *${biz?.name || id}* を選択。受電状況は「📥 受電履歴 / 📊 受電分析」で確認できます。`));
       }
