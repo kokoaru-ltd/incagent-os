@@ -129,6 +129,36 @@ function formatOutbound(campaigns: any[], logs: any[]): string {
   return t.slice(0, 2900);
 }
 
+// ---------- 受電履歴 詳細版（CRM的に1件ずつ） ----------
+function inboundHistoryBlocks(logs: any[]): any[] {
+  const labels: Record<string, string> = {
+    inquiry: "問い合わせ対応✅", callback: "折り返し約束", rejected: "断り", voicemail: "留守電", no_answer: "応答なし",
+  };
+  const blocks: any[] = [
+    { type: "section", text: { type: "mrkdwn", text: "*📥 受電履歴（直近10件・詳細）*" } },
+    { type: "divider" },
+  ];
+  if (!logs.length) {
+    blocks.push({ type: "section", text: { type: "mrkdwn", text: "受電履歴がありません。" } });
+    return blocks;
+  }
+  for (const l of logs.slice(0, 10)) {
+    const w = l.started_at ? new Date(l.started_at).toLocaleString("ja-JP") : "";
+    const dur = l.duration_seconds ? `${Math.floor(l.duration_seconds / 60)}分${l.duration_seconds % 60}秒` : "-";
+    const company = l.company_name || l.contact_name || "不明";
+    const phone = l.phone_number || "";
+    const result = labels[l.result] || l.result || "記録";
+    const summary = l.summary ? String(l.summary).slice(0, 250) : "(要約なし)";
+    const rec = l.recording_url ? `\n🎧 <${l.recording_url}|録音を聞く>` : "";
+    blocks.push({
+      type: "section",
+      text: { type: "mrkdwn", text: `*🕐 ${w}*\n🏢 ${company}　☎️ ${phone}\n結果: *${result}*　⏱️ ${dur}\n📝 ${summary}${rec}` },
+    });
+    blocks.push({ type: "divider" });
+  }
+  return blocks.slice(0, 48);
+}
+
 // ---------- 受電分析（完結率・人件費削減） ----------
 function analyzeInbound(logs: any[]): string {
   const total = logs.length;
@@ -197,15 +227,8 @@ async function menuBlocks() {
 async function handleAction(actionId: string, cfg: Record<string, string>, responseUrl: string) {
   try {
     if (actionId === "apo_inbound_history") {
-      const logs = await apotrailCallLogs(cfg, 20, "inbound");
-      const labels: Record<string, string> = { inquiry: "問い合わせ対応✅", callback: "折り返し約束", rejected: "断り", voicemail: "留守電", no_answer: "応答なし" };
-      let t = "*📥 受電履歴（直近20件）*\n\n";
-      if (!logs.length) t += "受電履歴がありません。";
-      else for (const l of logs) {
-        const w = l.started_at ? new Date(l.started_at).toLocaleString("ja-JP") : "";
-        t += `• ${w}　→ ${labels[l.result] || l.result || "記録"}\n`;
-      }
-      await postResponse(responseUrl, t.slice(0, 2900));
+      const logs = await apotrailCallLogs(cfg, 10, "inbound");
+      await postResponse(responseUrl, "", inboundHistoryBlocks(logs));
     } else if (actionId === "apo_inbound_analysis") {
       const logs = await apotrailCallLogs(cfg, 200, "inbound");
       await postResponse(responseUrl, analyzeInbound(logs));
