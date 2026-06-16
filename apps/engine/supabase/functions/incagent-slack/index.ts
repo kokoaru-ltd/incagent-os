@@ -30,7 +30,7 @@ async function getBusinesses() {
   return await res.json();
 }
 
-async function getReceptionLeads(limit = 15) {
+async function getReceptionLeads(limit = 10, offset = 0) {
   const params = new URLSearchParams({
     select: "id,company,job_title,job_url,source,source_url,phone,location,score,status,reason,created_at",
     status: "eq.pending",
@@ -38,10 +38,34 @@ async function getReceptionLeads(limit = 15) {
     limit: String(limit),
   });
   const res = await fetch(`${SUPABASE_URL}/rest/v1/reception_leads?${params.toString()}`, {
-    headers: { apikey: SERVICE_ROLE, Authorization: `Bearer ${SERVICE_ROLE}` },
+    headers: {
+      apikey: SERVICE_ROLE,
+      Authorization: `Bearer ${SERVICE_ROLE}`,
+      Range: `${offset}-${offset + limit - 1}`,
+      Prefer: "count=exact",
+    },
   });
   if (!res.ok) return [];
   return await res.json();
+}
+
+async function countReceptionLeads() {
+  const params = new URLSearchParams({
+    select: "id",
+    status: "eq.pending",
+    limit: "1",
+  });
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/reception_leads?${params.toString()}`, {
+    headers: {
+      apikey: SERVICE_ROLE,
+      Authorization: `Bearer ${SERVICE_ROLE}`,
+      Range: "0-0",
+      Prefer: "count=exact",
+    },
+  });
+  const range = res.headers.get("content-range") || "";
+  const total = Number(range.split("/")[1] || 0);
+  return Number.isFinite(total) ? total : 0;
 }
 
 function normalizeCompanyName(name: string): string {
@@ -463,10 +487,10 @@ function receptionOutreachDraft(lead?: any, tenant?: any): string {
   ].join("\n");
 }
 
-function receptionLeadBlocks(leads: any[], tenant?: any): any[] {
+function receptionLeadBlocks(leads: any[], tenant?: any, offset = 0, total = leads.length): any[] {
   const blocks: any[] = [
-    { type: "header", text: { type: "plain_text", text: "????: ?????" } },
-    { type: "section", text: { type: "mrkdwn", text: leads.length ? `DB???? ${leads.length}???????????????????????????????????????????????` : "DB?????????????????????????DB??????" } },
+    { type: "header", text: { type: "plain_text", text: "Reception Lead CRM" } },
+    { type: "section", text: { type: "mrkdwn", text: leads.length ? `Stock: *${total}* / Showing: *${offset + 1}-${offset + leads.length}*\n会社ごとに Call / Form / Apply の営業キューへ投入できます。同一社名・同一チャネルは重複投入しません。` : "DBに求人リードがまだありません。まずストック生成が必要です。" } },
     { type: "divider" },
   ];
 
@@ -477,38 +501,45 @@ function receptionLeadBlocks(leads: any[], tenant?: any): any[] {
     return blocks;
   }
 
-  for (const lead of leads.slice(0, 15)) {
+  for (const lead of leads.slice(0, 10)) {
     const title = [lead.company, lead.job_title].filter(Boolean).join(" / ");
     const url = lead.job_url || lead.source_url || "";
-    const line = [
-      `*${title || "?????"}*`,
-      `score: ${lead.score ?? 0} / source: ${lead.source || "-"}`,
-      lead.location ? `??: ${lead.location}` : "",
-      lead.phone ? `??: ${lead.phone}` : "??: ????????????????????",
-      lead.reason ? `??: ${String(lead.reason).slice(0, 140)}` : "",
-      url ? `<${url}|?????>` : "",
-    ].filter(Boolean).join("\n");
-    blocks.push({ type: "section", text: { type: "mrkdwn", text: line } });
+    blocks.push({
+      type: "section",
+      fields: [
+        { type: "mrkdwn", text: `*${title || "No name"}*\n${lead.location || "-"} / ${lead.source || "-"}` },
+        { type: "mrkdwn", text: `*Score:* ${lead.score ?? 0}\n*Tel:* ${lead.phone || "need lookup"}\n${url ? `<${url}|source>` : ""}` },
+      ],
+    });
+    if (lead.reason) {
+      blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: String(lead.reason).slice(0, 220) }] });
+    }
     blocks.push({ type: "actions", elements: [
-      btn("?????", `outreach_call_${lead.id}`, "primary"),
-      btn("??????", `outreach_form_${lead.id}`),
-      btn("?????", `outreach_platform_${lead.id}`),
+      btn("Call", `outreach_call_${lead.id}`, "primary"),
+      btn("Form", `outreach_form_${lead.id}`),
+      btn("Apply", `outreach_platform_${lead.id}`),
     ] });
   }
 
-  blocks.push({ type: "actions", elements: [btn("????", "reception_sources"), btn("???????", "outreach_status")] });
+  const nav: any[] = [btn("Search Sources", "reception_sources"), btn("Task Status", "outreach_status")];
+  if (offset > 0) nav.push(btn("Prev 10", `reception_page_${Math.max(0, offset - 10)}`));
+  if (offset + leads.length < total) nav.push(btn("Next 10", `reception_page_${offset + 10}`, "primary"));
+  blocks.push({ type: "actions", elements: nav.slice(0, 5) });
   blocks.push(backActions());
   return blocks.slice(0, 48);
 }
 
-async function receptionBusinessBlocks(tenant?: any): Promise<any[]> {
-  const leads = await getReceptionLeads(15);
-  const tasks = await getOutreachTaskSummary(tenant?.id);
-  const blocks = receptionLeadBlocks(leads, tenant);
+async function receptionBusinessBlocks(tenant?: any, offset = 0): Promise<any[]> {
+  const [leads, total, tasks] = await Promise.all([
+    getReceptionLeads(10, offset),
+    countReceptionLeads(),
+    getOutreachTaskSummary(tenant?.id),
+  ]);
+  const blocks = receptionLeadBlocks(leads, tenant, offset, total);
   blocks.splice(1, 0, { type: "section", text: { type: "mrkdwn", text: [
-    "*???????: ????*",
-    "?????=???????????=??????????????????????????????????",
-    tasks.length ? `?????: ${tasks.length}?` : "?????: ???????",
+    "*Business: Reception Agent*",
+    "求人=人件費を払う意思あり。ここは候補表示ではなく営業CRMです。",
+    tasks.length ? `Tasks: ${tasks.length}` : "Tasks: 0",
   ].join("\n") } });
   return blocks;
 }
@@ -981,6 +1012,9 @@ async function handleAction(actionId: string, cfg: Record<string, string>, sende
       await sender("", resultBlocks(templateHowToText()));
     } else if (actionId === "reception_sources") {
       await sender("", resultBlocks(receptionSearchLinks()));
+    } else if (actionId.startsWith("reception_page_")) {
+      const offset = Number(actionId.replace("reception_page_", "")) || 0;
+      await sender("", await receptionBusinessBlocks(await getTenantBySlackTeam(teamId), offset), true);
     } else if (actionId === "outreach_status") {
       const tenant = await getTenantBySlackTeam(teamId);
       const tasks = await getOutreachTaskSummary(tenant?.id);
