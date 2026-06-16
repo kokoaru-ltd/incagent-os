@@ -71,6 +71,64 @@ async function apotrailCallLogs(cfg: Record<string, string>, limit: number, dire
   return data.logs || [];
 }
 
+// 汎用GET（トークン付き）
+async function apotrailGet(cfg: Record<string, string>, path: string) {
+  const token = await apotrailToken(cfg);
+  const res = await fetch(`${cfg.APOTRAIL_BASE_URL}${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`GET ${path} ${res.status}`);
+  return await res.json();
+}
+
+// 今月のサマリ（受電件数・完結率・人件費削減累計）
+function monthlySummary(logs: any[]): string {
+  const now = new Date();
+  const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const month = logs.filter((l) => (l.started_at || "").startsWith(ym));
+  const total = month.length;
+  const completed = month.filter((l) => l.result === "inquiry").length;
+  const rate = total ? ((completed / total) * 100).toFixed(1) : "0.0";
+  const saved = completed * 150;
+  let t = `*📈 今月のサマリ（${ym}）*\n\n`;
+  t += "```\n";
+  t += `受電件数        ${total}件\n`;
+  t += `一次対応完結    ${completed}件 (${rate}%)\n`;
+  t += `人件費削減      ¥${saved.toLocaleString("ja-JP")}相当\n`;
+  t += "```\n";
+  t += total === 0 ? "\n今月はまだ受電がありません。" : "";
+  return t;
+}
+
+// 受電設定の表示
+function formatSettings(s: any): string {
+  const bh = s.business_hours_enabled
+    ? `${s.business_hours_start || "?"}〜${s.business_hours_end || "?"}`
+    : "終日対応";
+  let t = "*⚙️ 受電設定（アポトレール）*\n\n";
+  t += `*会社名:* ${s.store_name || "(未設定)"}\n`;
+  t += `*受電番号:* ${s.twilioNumber || "(未割当)"}\n`;
+  t += `*転送先:* ${s.transfer_number || "(なし)"}\n`;
+  t += `*営業時間:* ${bh}\n`;
+  t += `*音声:* ${s.voice || "-"} / モデル: ${s.model || "-"}\n`;
+  if (s.prompt) t += `\n*対応内容(プロンプト):*\n${String(s.prompt).slice(0, 600)}`;
+  return t.slice(0, 2900);
+}
+
+// 架電状況（キャンペーン一覧＋架電履歴）
+function formatOutbound(campaigns: any[], logs: any[]): string {
+  let t = "*📞 架電状況（準備中事業用・参考）*\n\n*キャンペーン:*\n";
+  if (!campaigns.length) t += "　なし\n";
+  else for (const c of campaigns.slice(0, 8)) t += `　• ${c.name || c.id}（${c.status || "?"}）\n`;
+  t += "\n*直近の架電:*\n";
+  if (!logs.length) t += "　なし";
+  else for (const l of logs.slice(0, 8)) {
+    const w = l.started_at ? new Date(l.started_at).toLocaleString("ja-JP") : "";
+    t += `　• ${w} → ${l.gate_result || l.result || "記録"}\n`;
+  }
+  return t.slice(0, 2900);
+}
+
 // ---------- 受電分析（完結率・人件費削減） ----------
 function analyzeInbound(logs: any[]): string {
   const total = logs.length;
@@ -121,6 +179,15 @@ async function menuBlocks() {
       type: "actions", elements: [
         { type: "button", text: { type: "plain_text", text: "📥 受電履歴" }, action_id: "apo_inbound_history", style: "primary" },
         { type: "button", text: { type: "plain_text", text: "📊 受電分析" }, action_id: "apo_inbound_analysis", style: "primary" },
+        { type: "button", text: { type: "plain_text", text: "📈 今月のサマリ" }, action_id: "apo_summary", style: "primary" },
+      ],
+    },
+    { type: "divider" },
+    { type: "section", text: { type: "mrkdwn", text: "*③ 設定・架電*" } },
+    {
+      type: "actions", elements: [
+        { type: "button", text: { type: "plain_text", text: "⚙️ 受電設定" }, action_id: "apo_settings" },
+        { type: "button", text: { type: "plain_text", text: "📞 架電状況" }, action_id: "apo_outbound" },
       ],
     },
   ];
@@ -142,6 +209,17 @@ async function handleAction(actionId: string, cfg: Record<string, string>, respo
     } else if (actionId === "apo_inbound_analysis") {
       const logs = await apotrailCallLogs(cfg, 200, "inbound");
       await postResponse(responseUrl, analyzeInbound(logs));
+    } else if (actionId === "apo_summary") {
+      const logs = await apotrailCallLogs(cfg, 500, "inbound");
+      await postResponse(responseUrl, monthlySummary(logs));
+    } else if (actionId === "apo_settings") {
+      const s = await apotrailGet(cfg, "/api/admin/incoming-settings");
+      await postResponse(responseUrl, formatSettings(s));
+    } else if (actionId === "apo_outbound") {
+      const campaigns = await apotrailGet(cfg, "/api/campaigns");
+      const camps = Array.isArray(campaigns) ? campaigns : (campaigns.campaigns || []);
+      const logs = await apotrailCallLogs(cfg, 10, "outbound");
+      await postResponse(responseUrl, formatOutbound(camps, logs));
     } else if (actionId.startsWith("select_")) {
       const id = actionId.replace("select_", "");
       const businesses = await getBusinesses();
