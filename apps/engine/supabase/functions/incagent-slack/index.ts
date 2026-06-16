@@ -236,6 +236,19 @@ async function postDM(cfg: Record<string, string>, userId: string, text: string,
   });
 }
 
+async function postChannel(cfg: Record<string, string>, channel: string, text: string, blocks?: any[], threadTs?: string) {
+  await fetch("https://slack.com/api/chat.postMessage", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${cfg.SLACK_BOT_TOKEN}`, "Content-Type": "application/json; charset=utf-8" },
+    body: JSON.stringify({
+      channel,
+      text: text || "INCAGENT",
+      ...(blocks ? { blocks } : {}),
+      ...(threadTs ? { thread_ts: threadTs } : {}),
+    }),
+  });
+}
+
 // ボタン生成ヘルパー
 function btn(text: string, action_id: string, style?: string) {
   return { type: "button", text: { type: "plain_text", text }, action_id, ...(style ? { style } : {}) };
@@ -359,6 +372,93 @@ async function publishHome(cfg: Record<string, string>, userId: string) {
   });
 }
 
+function normalizeSlackText(text: string): string {
+  return String(text || "")
+    .replace(/<@[A-Z0-9]+>/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+async function handleMessageEvent(event: any, cfg: Record<string, string>) {
+  if (!event?.channel || event.bot_id || event.subtype) return;
+
+  const text = normalizeSlackText(event.text || "");
+  const channel = event.channel;
+  const threadTs = event.thread_ts || event.ts;
+
+  if (!text || text === "メニュー" || text.includes("何できる") || text.includes("なにできる")) {
+    await postChannel(cfg, channel, "INCAGENTメニュー", await menuBlocks(), threadTs);
+    return;
+  }
+
+  if (text.includes("ヘルプ") || text.includes("help") || text.includes("使い方")) {
+    await postChannel(cfg, channel, "ヘルプ", await subMenuBlocks("help"), threadTs);
+    return;
+  }
+
+  if (text.includes("初期設定") || text.includes("初期テンプレ")) {
+    await postChannel(cfg, channel, "受電テンプレ初期設定", resultBlocks(templateDefaults()), threadTs);
+    return;
+  }
+
+  if (text.includes("テンプレ") || text.includes("prompt") || text.includes("プロンプト")) {
+    const s = await apotrailGet(cfg, "/api/admin/incoming-settings");
+    await postChannel(cfg, channel, "受電テンプレ", resultBlocks(currentTemplateText(s)), threadTs);
+    return;
+  }
+
+  if (text.includes("受電") && (text.includes("設定") || text.includes("番号") || text.includes("転送"))) {
+    const s = await apotrailGet(cfg, "/api/admin/incoming-settings");
+    await postChannel(cfg, channel, "受電設定", resultBlocks(formatSettings(s)), threadTs);
+    return;
+  }
+
+  if (text.includes("受電") && (text.includes("履歴") || text.includes("ログ"))) {
+    const logs = await apotrailCallLogs(cfg, 10, "inbound");
+    await postChannel(cfg, channel, "受電履歴", inboundHistoryBlocks(logs), threadTs);
+    return;
+  }
+
+  if (text.includes("受電") && (text.includes("分析") || text.includes("完結") || text.includes("削減"))) {
+    const logs = await apotrailCallLogs(cfg, 200, "inbound");
+    await postChannel(cfg, channel, "受電分析", resultBlocks(analyzeInbound(logs)), threadTs);
+    return;
+  }
+
+  if (text.includes("今月") || text.includes("サマリ") || text.includes("summary")) {
+    const logs = await apotrailCallLogs(cfg, 500, "inbound");
+    await postChannel(cfg, channel, "今月のサマリ", resultBlocks(monthlySummary(logs)), threadTs);
+    return;
+  }
+
+  if (text.includes("架電")) {
+    const campaigns = await apotrailGet(cfg, "/api/campaigns");
+    const camps = Array.isArray(campaigns) ? campaigns : (campaigns.campaigns || []);
+    const logs = await apotrailCallLogs(cfg, 10, "outbound");
+    await postChannel(cfg, channel, "架電状況", resultBlocks(formatOutbound(camps, logs)), threadTs);
+    return;
+  }
+
+  if (text.includes("csv") || text.includes("出力") || text.includes("エクスポート")) {
+    const logs = await apotrailCallLogs(cfg, 500, "inbound");
+    const now = new Date();
+    const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
+    const filename = `inbound_${stamp}.csv`;
+    const url = await uploadCsv(toCsv(logs), filename);
+    await postChannel(cfg, channel, "CSV出力完了", resultBlocks(`*📄 CSV出力完了（受電${logs.length}件）*\n<${url}|📥 ${filename} をダウンロード>`), threadTs);
+    return;
+  }
+
+  await postChannel(
+    cfg,
+    channel,
+    "INCAGENT",
+    resultBlocks("その言い方だと対象が曖昧です。例: `受電履歴見せて` / `架電状況` / `受電テンプレ` / `ヘルプ`"),
+    threadTs,
+  );
+}
+
 // ---------- アクション処理 ----------
 async function handleAction(actionId: string, cfg: Record<string, string>, sender: (t: string, b?: any[], replace?: boolean) => Promise<void>) {
   try {
@@ -436,6 +536,11 @@ Deno.serve(async (req: Request) => {
       const userId = data.event.user;
       (globalThis as any).EdgeRuntime?.waitUntil(publishHome(cfg, userId));
       if (!(globalThis as any).EdgeRuntime) await publishHome(cfg, userId);
+      return new Response("", { status: 200 });
+    }
+    if (data.type === "event_callback" && (data.event?.type === "app_mention" || data.event?.type === "message")) {
+      (globalThis as any).EdgeRuntime?.waitUntil(handleMessageEvent(data.event, cfg));
+      if (!(globalThis as any).EdgeRuntime) await handleMessageEvent(data.event, cfg);
       return new Response("", { status: 200 });
     }
     return new Response("", { status: 200 });
