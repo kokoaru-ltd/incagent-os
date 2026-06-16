@@ -518,20 +518,30 @@ Deno.serve(async (req: Request) => {
 
   const cfg = await loadConfig();
   const body = await req.text();
+  const ctype = req.headers.get("content-type") || "";
+
+  // Slack Event Subscriptions URL verification must get the raw challenge back.
+  // Supabase should still be deployed with --no-verify-jwt because Slack will not send a Supabase JWT.
+  if (ctype.includes("application/json")) {
+    try {
+      const data = JSON.parse(body);
+      if (data.type === "url_verification") {
+        return new Response(data.challenge, { headers: { "Content-Type": "text/plain" } });
+      }
+    } catch {
+      // Fall through to signature verification for non-JSON or malformed requests.
+    }
+  }
+
   const sig = req.headers.get("x-slack-signature") || "";
   const ts = req.headers.get("x-slack-request-timestamp") || "";
   if (!(await verifySlack(cfg.SLACK_SIGNING_SECRET, sig, ts, body))) {
     return new Response("invalid signature", { status: 401 });
   }
 
-  const ctype = req.headers.get("content-type") || "";
-
   // Events API（App Home / url_verification）は JSON
   if (ctype.includes("application/json")) {
     const data = JSON.parse(body);
-    if (data.type === "url_verification") {
-      return new Response(data.challenge, { headers: { "Content-Type": "text/plain" } });
-    }
     if (data.type === "event_callback" && data.event?.type === "app_home_opened") {
       const userId = data.event.user;
       (globalThis as any).EdgeRuntime?.waitUntil(publishHome(cfg, userId));
