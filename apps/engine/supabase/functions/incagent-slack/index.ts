@@ -58,6 +58,45 @@ async function getReceptionLead(id: string) {
   return rows?.[0] || null;
 }
 
+async function getTenantBySlackTeam(teamId?: string) {
+  if (!teamId) return null;
+  const params = new URLSearchParams({
+    select: "id,slack_team_id,company_name,contact_name,contact_slack_user_id,onboarding_completed_at",
+    slack_team_id: `eq.${teamId}`,
+    limit: "1",
+  });
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/tenants?${params.toString()}`, {
+    headers: { apikey: SERVICE_ROLE, Authorization: `Bearer ${SERVICE_ROLE}` },
+  });
+  if (!res.ok) return null;
+  const rows = await res.json();
+  return rows?.[0] || null;
+}
+
+async function upsertTenantProfile(teamId: string, userId: string, companyName: string, contactName: string) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/tenants?on_conflict=slack_team_id`, {
+    method: "POST",
+    headers: {
+      apikey: SERVICE_ROLE,
+      Authorization: `Bearer ${SERVICE_ROLE}`,
+      "Content-Type": "application/json",
+      Prefer: "resolution=merge-duplicates,return=representation",
+    },
+    body: JSON.stringify({
+      slack_team_id: teamId,
+      company_name: companyName,
+      contact_name: contactName,
+      contact_slack_user_id: userId,
+      created_by_slack_user_id: userId,
+      onboarding_completed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }),
+  });
+  if (!res.ok) throw new Error(`tenant upsert ${res.status}: ${await res.text()}`);
+  const rows = await res.json();
+  return rows?.[0] || null;
+}
+
 async function verifySlack(signingSecret: string, sig: string, ts: string, body: string) {
   if (!sig || !ts) return false;
   if (Math.abs(Date.now() / 1000 - Number(ts)) > 60 * 5) return false;
@@ -338,8 +377,9 @@ function receptionSearchLinks(): string {
   ].join("\n");
 }
 
-function receptionOutreachDraft(lead?: any): string {
+function receptionOutreachDraft(lead?: any, tenant?: any): string {
   const company = lead?.company || "御社";
+  const sign = [tenant?.company_name, tenant?.contact_name].filter(Boolean).join(" ") || "Client Contact";
   const jobTitle = lead?.job_title ? `「${lead.job_title}」` : "電話受付/受電対応";
   return [
     "*✉️ 受電代行 営業文面下書き*",
@@ -359,7 +399,7 @@ function receptionOutreachDraft(lead?: any): string {
     "",
     "ご興味あれば、御社向けの受電デモを1本作ってお送りします。",
     "",
-    "合同会社ココアル 近藤",
+    sign,
   ].join("\n");
 }
 
@@ -487,6 +527,66 @@ function btn(text: string, action_id: string, style?: string) {
   return { type: "button", text: { type: "plain_text", text }, action_id, ...(style ? { style } : {}) };
 }
 
+function clientOnboardingBlocks(): any[] {
+  return [
+    { type: "header", text: { type: "plain_text", text: "INCAGENT 初期設定" } },
+    { type: "section", text: { type: "mrkdwn", text: [
+      "*最初にクライアント情報を登録してください。*",
+      "この情報を会社名、担当者名、営業文面、受電設定、テンプレ生成に使います。",
+      "",
+      "登録するもの:",
+      "・会社名",
+      "・担当者名",
+    ].join("\n") } },
+    { type: "actions", elements: [btn("会社名・担当者名を登録", "open_client_onboarding", "primary")] },
+    { type: "context", elements: [{ type: "mrkdwn", text: "契約顧客/OEM先ごとにSlackワークスペース単位で保存します。" }] },
+  ];
+}
+
+function clientOnboardingModal(existing?: any): any {
+  return {
+    type: "modal",
+    callback_id: "client_onboarding_submit",
+    title: { type: "plain_text", text: "初期設定" },
+    submit: { type: "plain_text", text: "保存" },
+    close: { type: "plain_text", text: "キャンセル" },
+    blocks: [
+      {
+        type: "input",
+        block_id: "company",
+        label: { type: "plain_text", text: "会社名" },
+        element: {
+          type: "plain_text_input",
+          action_id: "value",
+          placeholder: { type: "plain_text", text: "例: 合同会社ココアル" },
+          initial_value: existing?.company_name || "",
+        },
+      },
+      {
+        type: "input",
+        block_id: "contact",
+        label: { type: "plain_text", text: "担当者名" },
+        element: {
+          type: "plain_text_input",
+          action_id: "value",
+          placeholder: { type: "plain_text", text: "例: 近藤" },
+          initial_value: existing?.contact_name || "",
+        },
+      },
+    ],
+  };
+}
+
+async function openClientOnboardingModal(cfg: Record<string, string>, triggerId: string, existing?: any) {
+  const res = await fetch("https://slack.com/api/views.open", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${cfg.SLACK_BOT_TOKEN}`, "Content-Type": "application/json; charset=utf-8" },
+    body: JSON.stringify({ trigger_id: triggerId, view: clientOnboardingModal(existing) }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(`views.open ${data.error || res.status}`);
+}
+
 function backActions() {
   return { type: "actions", elements: [btn("⬅️ メニューに戻る", "menu_top")] };
 }
@@ -548,7 +648,8 @@ function homeHelpBlocks(): any[] {
 }
 
 // ---------- トップメニュー（6つの入口・LINEリッチメニュー風グリッド） ----------
-async function menuBlocks() {
+async function menuBlocks(tenant?: any) {
+  if (!tenant?.company_name || !tenant?.contact_name) return clientOnboardingBlocks();
   return [
     { type: "header", text: { type: "plain_text", text: "🏢 INCAGENT 事業OS" } },
     { type: "section", text: { type: "mrkdwn", text: "ボタンでも会話でも操作できます。まずは `受電履歴見せて` / `受電テンプレ` / `ヘルプ` と話しかけてください。" } },
@@ -561,6 +662,7 @@ async function menuBlocks() {
       btn("⚙️ 受電設定", "menu_settings"),
       btn("📞 架電", "menu_outbound"),
       btn("❓ ヘルプ", "menu_help"),
+      btn("会社情報を変更", "open_client_onboarding"),
     ] },
     ...homeHelpBlocks(),
   ];
@@ -650,8 +752,8 @@ async function subMenuBlocks(cat: string) {
 }
 
 // ---------- App Home に常設メニューを表示（リッチメニュー） ----------
-async function publishHome(cfg: Record<string, string>, userId: string) {
-  const blocks = await menuBlocks();
+async function publishHome(cfg: Record<string, string>, userId: string, teamId?: string) {
+  const blocks = await menuBlocks(await getTenantBySlackTeam(teamId));
   await fetch("https://slack.com/api/views.publish", {
     method: "POST",
     headers: { Authorization: `Bearer ${cfg.SLACK_BOT_TOKEN}`, "Content-Type": "application/json; charset=utf-8" },
@@ -673,9 +775,10 @@ async function handleMessageEvent(event: any, cfg: Record<string, string>) {
   const text = normalizeSlackText(event.text || "");
   const channel = event.channel;
   const threadTs = event.thread_ts || event.ts;
+  const tenant = await getTenantBySlackTeam(event.team);
 
   if (!text || text === "メニュー" || text.includes("何できる") || text.includes("なにできる")) {
-    await postChannel(cfg, channel, "INCAGENTメニュー", await menuBlocks(), threadTs);
+    await postChannel(cfg, channel, "INCAGENTメニュー", await menuBlocks(tenant), threadTs);
     return;
   }
 
@@ -695,7 +798,7 @@ async function handleMessageEvent(event: any, cfg: Record<string, string>) {
   }
 
   if (text.includes("営業文") || text.includes("メール文") || text.includes("送信文")) {
-    await postChannel(cfg, channel, "受電代行 営業文面", resultBlocks(receptionOutreachDraft()), threadTs);
+    await postChannel(cfg, channel, "受電代行 営業文面", resultBlocks(receptionOutreachDraft(undefined, tenant)), threadTs);
     return;
   }
 
@@ -778,10 +881,12 @@ async function handleMessageEvent(event: any, cfg: Record<string, string>) {
 }
 
 // ---------- アクション処理 ----------
-async function handleAction(actionId: string, cfg: Record<string, string>, sender: (t: string, b?: any[], replace?: boolean) => Promise<void>) {
+async function handleAction(actionId: string, cfg: Record<string, string>, sender: (t: string, b?: any[], replace?: boolean) => Promise<void>, teamId?: string, triggerId?: string) {
   try {
     if (actionId === "menu_top") {
-      await sender("", await menuBlocks(), true);
+      await sender("", await menuBlocks(await getTenantBySlackTeam(teamId)), true);
+    } else if (actionId === "open_client_onboarding") {
+      await openClientOnboardingModal(cfg, triggerId || "", await getTenantBySlackTeam(teamId));
     } else if (actionId.startsWith("menu_")) {
       await sender("", await subMenuBlocks(actionId.replace("menu_", "")), true);
     } else if (actionId === "apo_inbound_history") {
@@ -818,7 +923,7 @@ async function handleAction(actionId: string, cfg: Record<string, string>, sende
     } else if (actionId.startsWith("reception_outreach_")) {
       const id = actionId.replace("reception_outreach_", "");
       const lead = await getReceptionLead(id);
-      await sender("", resultBlocks(receptionOutreachDraft(lead)));
+      await sender("", resultBlocks(receptionOutreachDraft(lead, await getTenantBySlackTeam(teamId))));
     } else if (actionId === "apo_outbound") {
       const campaigns = await apotrailGet(cfg, "/api/campaigns");
       const camps = Array.isArray(campaigns) ? campaigns : (campaigns.campaigns || []);
@@ -875,8 +980,8 @@ Deno.serve(async (req: Request) => {
     const data = JSON.parse(body);
     if (data.type === "event_callback" && data.event?.type === "app_home_opened") {
       const userId = data.event.user;
-      (globalThis as any).EdgeRuntime?.waitUntil(publishHome(cfg, userId));
-      if (!(globalThis as any).EdgeRuntime) await publishHome(cfg, userId);
+      (globalThis as any).EdgeRuntime?.waitUntil(publishHome(cfg, userId, data.team_id || data.event.team));
+      if (!(globalThis as any).EdgeRuntime) await publishHome(cfg, userId, data.team_id || data.event.team);
       return new Response("", { status: 200 });
     }
     if (data.type === "event_callback" && (data.event?.type === "app_mention" || data.event?.type === "message")) {
@@ -891,7 +996,7 @@ Deno.serve(async (req: Request) => {
   const params = new URLSearchParams(body);
 
   if (params.get("command")) {
-    const blocks = await menuBlocks();
+    const blocks = await menuBlocks(await getTenantBySlackTeam(params.get("team_id") || undefined));
     return new Response(JSON.stringify({ response_type: "in_channel", blocks }), {
       headers: { "Content-Type": "application/json" },
     });
@@ -900,16 +1005,32 @@ Deno.serve(async (req: Request) => {
   const payloadStr = params.get("payload");
   if (payloadStr) {
     const payload = JSON.parse(payloadStr);
+    if (payload.type === "view_submission" && payload.view?.callback_id === "client_onboarding_submit") {
+      const companyName = payload.view.state.values.company.value.value.trim();
+      const contactName = payload.view.state.values.contact.value.value.trim();
+      const teamId = payload.team?.id;
+      const userId = payload.user?.id;
+      const save = async () => {
+        await upsertTenantProfile(teamId, userId, companyName, contactName);
+        await publishHome(cfg, userId, teamId);
+      };
+      (globalThis as any).EdgeRuntime?.waitUntil(save());
+      if (!(globalThis as any).EdgeRuntime) await save();
+      return new Response(JSON.stringify({ response_action: "clear" }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     const action = payload.actions?.[0];
     const responseUrl = payload.response_url;
     const userId = payload.user?.id;
+    const teamId = payload.team?.id;
     if (action) {
       // チャンネルのメニュー → response_url。App Home のボタン → DM(chat.postMessage)
       const sender = responseUrl
         ? (t: string, b?: any[], replace?: boolean) => postResponse(responseUrl, t, b, replace)
         : (t: string, b?: any[]) => postDM(cfg, userId, t, b);
-      (globalThis as any).EdgeRuntime?.waitUntil(handleAction(action.action_id, cfg, sender));
-      if (!(globalThis as any).EdgeRuntime) await handleAction(action.action_id, cfg, sender);
+      (globalThis as any).EdgeRuntime?.waitUntil(handleAction(action.action_id, cfg, sender, teamId, payload.trigger_id));
+      if (!(globalThis as any).EdgeRuntime) await handleAction(action.action_id, cfg, sender, teamId, payload.trigger_id);
     }
     return new Response("", { status: 200 });
   }
