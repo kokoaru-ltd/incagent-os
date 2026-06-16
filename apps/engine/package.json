@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "leads:reception": "node src/reception-leads-cli.js"
   },
   "dependencies": {
     "@slack/bolt": "^3.14.0",

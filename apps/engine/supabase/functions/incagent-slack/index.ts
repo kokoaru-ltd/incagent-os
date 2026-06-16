@@ -118,8 +118,51 @@ function formatSettings(s: any): string {
   t += `*会社名:* ${s.store_name || "(未設定)"}\n*受電番号:* ${s.twilioNumber || "(未割当)"}\n`;
   t += `*転送先:* ${s.transfer_number || "(なし)"}\n*営業時間:* ${bh}\n`;
   t += `*音声:* ${s.voice || "-"} / モデル: ${s.model || "-"}\n`;
-  if (s.prompt) t += `\n*対応内容(プロンプト):*\n${String(s.prompt).slice(0, 600)}`;
+  t += `*受電テンプレ:* ${inferTemplateName(s.prompt)}\n`;
+  t += "\n受電時に実際に使われる中身は、アポトレールの `incoming_settings.prompt` です。";
+  if (s.prompt) t += `\n\n*現在の受電プロンプト:*\n${String(s.prompt).slice(0, 800)}`;
+  else t += "\n\n*現在の受電プロンプト:* 未設定。まず「標準受付テンプレ」を初期値にしてください。";
   return t.slice(0, 2900);
+}
+
+function inferTemplateName(prompt?: string): string {
+  const p = String(prompt || "");
+  if (!p) return "未設定";
+  if (p.includes("予約") || p.includes("日時")) return "予約受付テンプレ";
+  if (p.includes("士業") || p.includes("相談") || p.includes("不動産")) return "高単価相談テンプレ";
+  if (p.includes("折り返し") || p.includes("要件")) return "標準受付テンプレ";
+  return "カスタムテンプレ";
+}
+
+function templateDefaults(): string {
+  return [
+    "*🧩 受電テンプレ 初期設定*",
+    "",
+    "*1. 標準受付テンプレ（初期値）*",
+    "会社名、名前、電話番号、用件、折り返し希望を聞き取り、答えられない内容は転送または折り返しに回す。",
+    "",
+    "*2. 予約受付テンプレ*",
+    "予約希望日、人数、メニュー、初回/再訪、連絡先を聞き取り、空き確認が必要な場合は折り返しにする。",
+    "",
+    "*3. 高単価相談テンプレ（不動産・士業・医療など）*",
+    "相談内容、緊急度、希望日時、連絡先を丁寧に聞き取り、専門判断や金額回答は人間へ渡す。",
+    "",
+    "本番でどのテンプレを使うかは `incoming_settings.prompt` に保存された内容で決まります。",
+  ].join("\n");
+}
+
+function currentTemplateText(s: any): string {
+  return [
+    "*🧩 現在の受電テンプレ*",
+    "",
+    `*選択状態:* ${inferTemplateName(s.prompt)}`,
+    `*受電番号:* ${s.twilioNumber || "(未割当)"}`,
+    `*会社名:* ${s.store_name || "(未設定)"}`,
+    "",
+    "受電はこの設定の `prompt` で応答します。テンプレ名だけではなく、保存済みプロンプト本文が本番の挙動です。",
+    "",
+    s.prompt ? `*prompt:*\n${String(s.prompt).slice(0, 1200)}` : "*prompt:* 未設定",
+  ].join("\n").slice(0, 2900);
 }
 
 function formatOutbound(campaigns: any[], logs: any[]): string {
@@ -141,7 +184,11 @@ function inboundHistoryBlocks(logs: any[]): any[] {
     { type: "section", text: { type: "mrkdwn", text: "*📥 受電履歴（直近10件・詳細）*" } },
     { type: "divider" },
   ];
-  if (!logs.length) { blocks.push({ type: "section", text: { type: "mrkdwn", text: "受電履歴がありません。" } }); return blocks; }
+  if (!logs.length) {
+    blocks.push({ type: "section", text: { type: "mrkdwn", text: "受電履歴がありません。" } });
+    blocks.push(backActions());
+    return blocks;
+  }
   for (const l of logs.slice(0, 10)) {
     const w = l.started_at ? new Date(l.started_at).toLocaleString("ja-JP") : "";
     const dur = l.duration_seconds ? `${Math.floor(l.duration_seconds / 60)}分${l.duration_seconds % 60}秒` : "-";
@@ -153,6 +200,7 @@ function inboundHistoryBlocks(logs: any[]): any[] {
     blocks.push({ type: "section", text: { type: "mrkdwn", text: `*🕐 ${w}*\n🏢 ${company}　☎️ ${phone}\n結果: *${result}*　⏱️ ${dur}\n📝 ${summary}${rec}` } });
     blocks.push({ type: "divider" });
   }
+  blocks.push(backActions());
   return blocks.slice(0, 48);
 }
 
@@ -191,6 +239,17 @@ async function postDM(cfg: Record<string, string>, userId: string, text: string,
 // ボタン生成ヘルパー
 function btn(text: string, action_id: string, style?: string) {
   return { type: "button", text: { type: "plain_text", text }, action_id, ...(style ? { style } : {}) };
+}
+
+function backActions() {
+  return { type: "actions", elements: [btn("⬅️ メニューに戻る", "menu_top")] };
+}
+
+function resultBlocks(text: string): any[] {
+  return [
+    { type: "section", text: { type: "mrkdwn", text } },
+    backActions(),
+  ];
 }
 
 // ---------- トップメニュー（6つの入口・LINEリッチメニュー風グリッド） ----------
@@ -247,7 +306,12 @@ async function subMenuBlocks(cat: string) {
   if (cat === "settings") {
     return [
       { type: "header", text: { type: "plain_text", text: "⚙️ 受電設定" } },
-      { type: "actions", elements: [btn("⚙️ 受電設定を確認", "apo_settings", "primary")] },
+      { type: "section", text: { type: "mrkdwn", text: "受電番号、転送先、営業時間、受電テンプレを確認します。受電の応答内容は `incoming_settings.prompt` が本番ソースです。" } },
+      { type: "actions", elements: [
+        btn("⚙️ 受電設定を確認", "apo_settings", "primary"),
+        btn("🧩 初期テンプレ", "apo_template_defaults"),
+        btn("✅ 使用中テンプレ", "apo_template_current"),
+      ] },
       back,
     ];
   }
@@ -261,7 +325,26 @@ async function subMenuBlocks(cat: string) {
   // help
   return [
     { type: "header", text: { type: "plain_text", text: "❓ ヘルプ・使い方" } },
-    { type: "section", text: { type: "mrkdwn", text: "*INCAGENT 事業OS の使い方*\n\n• 🏢 事業選択 … 回す事業を選ぶ（本命=受電代行）\n• 📥 受電状況 … 履歴・分析・今月サマリ\n• 📤 データ出力 … 受電履歴をCSV/Excel出力\n• ⚙️ 受電設定 … 会社名・転送先・営業時間を確認\n• 📞 架電 … 準備中事業の架電状況（参考）\n\n`/business-select` でいつでもこのメニューを開けます。" } },
+    { type: "section", text: { type: "mrkdwn", text: [
+      "*INCAGENT 事業OS の使い方*",
+      "",
+      "*🏢 事業選択*",
+      "回す事業を選びます。今の本命は受電代行です。コールドコール系は法務確認まで準備中のままにします。",
+      "",
+      "*📥 受電状況*",
+      "受電履歴、受電分析、今月サマリを見ます。完結率と人件費削減額を見る場所です。",
+      "",
+      "*📤 データ出力*",
+      "受電履歴をCSVで出します。Excelで開けるBOM付きUTF-8です。",
+      "",
+      "*⚙️ 受電設定*",
+      "会社名、050受電番号、転送先、営業時間、音声、使用中テンプレを確認します。受電テンプレの本体は `incoming_settings.prompt` です。",
+      "",
+      "*📞 架電*",
+      "準備中事業の参考表示です。表示後も下の「メニューに戻る」で戻れます。",
+      "",
+      "`/business-select` でいつでもトップメニューを開けます。",
+    ].join("\n") } },
     back,
   ];
 }
@@ -288,39 +371,44 @@ async function handleAction(actionId: string, cfg: Record<string, string>, sende
       await sender("", inboundHistoryBlocks(logs));
     } else if (actionId === "apo_inbound_analysis") {
       const logs = await apotrailCallLogs(cfg, 200, "inbound");
-      await sender(analyzeInbound(logs));
+      await sender("", resultBlocks(analyzeInbound(logs)));
     } else if (actionId === "apo_summary") {
       const logs = await apotrailCallLogs(cfg, 500, "inbound");
-      await sender(monthlySummary(logs));
+      await sender("", resultBlocks(monthlySummary(logs)));
     } else if (actionId === "apo_export_csv") {
       const logs = await apotrailCallLogs(cfg, 500, "inbound");
       const now = new Date();
       const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
       const filename = `inbound_${stamp}.csv`;
       const url = await uploadCsv(toCsv(logs), filename);
-      await sender(`*📄 CSV出力完了（受電${logs.length}件）*\n<${url}|📥 ${filename} をダウンロード>\n\nExcelでそのまま開けます（BOM付きUTF-8）。`);
+      await sender("", resultBlocks(`*📄 CSV出力完了（受電${logs.length}件）*\n<${url}|📥 ${filename} をダウンロード>\n\nExcelでそのまま開けます（BOM付きUTF-8）。`));
     } else if (actionId === "apo_settings") {
       const s = await apotrailGet(cfg, "/api/admin/incoming-settings");
-      await sender(formatSettings(s));
+      await sender("", resultBlocks(formatSettings(s)));
+    } else if (actionId === "apo_template_defaults") {
+      await sender("", resultBlocks(templateDefaults()));
+    } else if (actionId === "apo_template_current") {
+      const s = await apotrailGet(cfg, "/api/admin/incoming-settings");
+      await sender("", resultBlocks(currentTemplateText(s)));
     } else if (actionId === "apo_outbound") {
       const campaigns = await apotrailGet(cfg, "/api/campaigns");
       const camps = Array.isArray(campaigns) ? campaigns : (campaigns.campaigns || []);
       const logs = await apotrailCallLogs(cfg, 10, "outbound");
-      await sender(formatOutbound(camps, logs));
+      await sender("", resultBlocks(formatOutbound(camps, logs)));
     } else if (actionId.startsWith("select_")) {
       const id = actionId.replace("select_", "");
       const businesses = await getBusinesses();
       const biz = businesses.find((b: any) => b.id === id);
       if (biz?.status === "preparing") {
-        await sender(`🚧 *${biz.name} は準備中です*\n対個人勧誘の法務確認後に開放します。今は *受電代行* で縦1本を回してください。`);
+        await sender("", resultBlocks(`🚧 *${biz.name} は準備中です*\n対個人勧誘の法務確認後に開放します。今は *受電代行* で縦1本を回してください。`));
       } else {
-        await sender(`✅ *${biz?.name || id}* を選択。受電状況は「📥 受電履歴 / 📊 受電分析」で確認できます。`);
+        await sender("", resultBlocks(`✅ *${biz?.name || id}* を選択。受電状況は「📥 受電履歴 / 📊 受電分析」で確認できます。`));
       }
     } else {
-      await sender(`未対応のアクション: ${actionId}`);
+      await sender("", resultBlocks(`未対応のアクション: ${actionId}`));
     }
   } catch (e) {
-    await sender(`エラー: ${(e as Error).message}`);
+    await sender("", resultBlocks(`エラー: ${(e as Error).message}`));
   }
 }
 
